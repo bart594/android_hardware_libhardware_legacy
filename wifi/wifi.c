@@ -37,6 +37,9 @@
 #include "hardware_legacy/wifi.h"
 #include "libwpa_client/wpa_ctrl.h"
 
+#include "oncrpc.h"
+#include "nv.h"
+
 #define LOG_TAG "WifiHW"
 #include "cutils/log.h"
 #include "cutils/memory.h"
@@ -288,6 +291,41 @@ int is_wifi_driver_loaded() {
 #endif
 }
 
+static int is_modem_available(void);
+static void start_rpc_client(int enable);
+static void get_wlan_mac(unsigned char *buffer);
+
+static int is_modem_available(void)
+{
+	return nv_null() ? 1 : 0;
+}
+
+
+static void start_rpc_client( int  enable)
+{
+	if (enable == 1) {
+		oncrpc_init();
+		oncrpc_task_start();
+	} else {
+		oncrpc_task_stop();
+		oncrpc_deinit();
+	}
+}
+
+static void get_wlan_mac(unsigned char *buffer)
+{
+	nv_item_type nv_item;
+	int i;
+
+	/* Read the WLAN MAC NV Item */
+	nv_cmd_remote(NV_READ_F, NV_WLAN_MAC_ADDRESS_I, &nv_item);
+
+	/* Convert endianness (reverse the order). */
+	for (i = 0; i < 6; i++)
+		buffer[(6 - 1) - i] = nv_item.mac_address[i];
+}
+
+
 int wifi_load_driver()
 {
     int count = 100; /* wait at most 20 seconds for completion */
@@ -315,7 +353,39 @@ int wifi_load_driver()
     usleep(200000);
 #endif
 
-    if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0) {
+char wlan_mac[PROPERTY_VALUE_MAX];
+char serialno[PROPERTY_VALUE_MAX];
+unsigned char hwmac[6];
+char huawei_module_arg[256];
+
+		property_get("persist.wlan.mac", wlan_mac, "");
+
+		start_rpc_client(1);
+
+     if (is_modem_available()!=1) {
+			ALOGW("HUAWEI WIFI DRIVER MODULE:  Modem is not available, load ro.serialno");
+			property_get("ro.serialno", serialno, "f6r121");
+
+		} else {
+			get_wlan_mac(hwmac);
+			int i;
+			for(i=0;i<6;i++) {
+			 	serialno[i] = hwmac[i];
+			}
+                }
+
+		start_rpc_client(0);
+
+    if(strlen(wlan_mac) == 0) {
+			snprintf(huawei_module_arg, sizeof(huawei_module_arg),
+				 "%s mac_param=%02x:%02x:%02x:%02x:%02x:%02x",
+				DRIVER_MODULE_ARG,
+				serialno[0], serialno[1], serialno[2], serialno[3], serialno[4], serialno[5]);
+                                else
+                snprintf(huawei_module_arg, sizeof(huawei_module_arg), "%s mac_param=%s", DRIVER_MODULE_ARG, wlan_mac);
+                ALOGW("HUAWEI WIFI DRIVER MODULE ARG: %s", huawei_module_arg);
+    if (insmod(DRIVER_MODULE_PATH, huawei_module_arg) < 0) {
+
 #endif
 
 #ifdef WIFI_EXT_MODULE_NAME
